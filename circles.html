@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ADViCE Solution Cards • The Alan Turing Institute</title>
+  <!-- D3 v7 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <style>
+    /*
+    =====================================================================
+    Core styles
+    - Keep everything in a single file
+    - Use CSS variables for theming and easy tweaks
+    =====================================================================
+    */
+    :root {
+      --bg: #dee2e6;
+      --panel-bg: #ffffff;
+      --panel-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      --panel-radius: 10px;
+      --ink: #000000;
+      --ink-soft: rgba(0,0,0,0.6);
+      --brand-ink: #00344d;
+      --header-bg: #d4ecf7;
+      --focus-ring: 0 0 0 3px rgba(0, 136, 204, 0.35);
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    .app {
+      block-size: 100dvh;
+      inline-size: 100%;
+      display: grid;
+      place-items: center;
+      overflow: hidden; /* allow the svg to manage panning/zooming */
+    }
+
+    #chart {
+      inline-size: min(1100px, 100%);
+      block-size: min(1100px, 100%);
+    }
+
+    /*
+    =====================================================================
+    Modal
+    =====================================================================
+    */
+    .modal {
+      position: fixed;
+      inset: 0;
+      display: none; /* toggled to flex */
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.45);
+      padding: 20px;
+      z-index: 9999;
+    }
+
+    .modal__card {
+      position: relative;
+      inline-size: min(420px, 90%);
+      background: var(--panel-bg);
+      border-radius: var(--panel-radius);
+      box-shadow: var(--panel-shadow);
+      overflow: hidden;
+    }
+
+    .modal__header {
+      background: var(--header-bg);
+      text-align: center;
+      padding: 12px 16px;
+    }
+
+    .modal__title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--brand-ink);
+    }
+
+    .modal__close {
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      border: none;
+      background: transparent;
+      font-size: 20px;
+      line-height: 1;
+      padding: 4px 8px;
+      cursor: pointer;
+      border-radius: 8px;
+    }
+    .modal__close:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+    }
+
+    .modal__body {
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .visually-hidden { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip: rect(1px, 1px, 1px, 1px); white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <main class="app" aria-label="ADViCE Solution Cards Bubble Chart">
+    <div id="chart" role="group" aria-label="Sectors, challenges, and solutions chart"></div>
+  </main>
+
+  <!-- Modal -->
+  <div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-body">
+    <div class="modal__card">
+      <div class="modal__header">
+        <h3 id="modal-title" class="modal__title"></h3>
+      </div>
+      <button id="modal-close" class="modal__close" aria-label="Close">×</button>
+      <div id="modal-body" class="modal__body"></div>
+    </div>
+  </div>
+
+  <script>
+  /*
+  ==============================================================================
+  ADViCE Solution Cards — Single‑file D3 app (refactored & documented)
+  ----------------------------------------------------------------------
+  Highlights
+  - Pure single file: HTML + CSS + JS
+  - Clear sections: config, utils, data, layout, rendering, interactivity
+  - Accessibility: roles/labels, focus rings, keyboard close
+  - Robustness: defensive defaults, color fallback, error handling
+  - Same behaviour as original with cleaner structure
+  ==============================================================================
+  */
+
+  // ---------------------------------------------------------------------------
+  // Configuration
+  // ---------------------------------------------------------------------------
+  const ENDPOINTS = {
+    cardsJSON: 'https://raw.githubusercontent.com/f-rower/ADViCE-Decarbonisation-Progress-Cards/refs/heads/main/data.json',
+    solutionsCSV: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSYtcwup1w6cmtYfuNB5Q1hoPzYBrkXzwubops_mSWGsuByXIele2Rm8il0GMa4ogc3wblj0bVsD0IE/pub?gid=69207822&single=true&output=csv'
+  };
+
+  /** Known sector colors; new sectors are assigned a pastel HSL. */
+  const SECTOR_COLOR = {
+    'Energy': 'rgb(176, 209, 210)',
+    'Manufacturing': 'rgb(209, 198, 195)',
+    'Agriculture': 'rgb(189, 215, 187)',
+    'Built Environment': 'rgb(210, 186, 195)',
+    'transport': 'silver'
+  };
+
+  // Column aliases from the solutions form
+  const COL = {
+    sectors: 'Please let us know what sectors your decarbonisation solution is oriented towards',
+    freeForm: 'Please let us know what decarbonisation challenge(s) your solution addresses or you are interested in addressing',
+    project: 'What is the name of your project or solution?',
+    org: 'What is the name of your organisation?',
+    ai: 'How are you using AI to tackle decarbonisation challenges?'
+  };
+
+  // Challenge checkbox columns by sector (CSV headings)
+  const CHALLENGE_COLS = [
+    'Please select what energy decarbonisation challenges your solution addresses, or alternatively, which of these challenges you are interested in addressing',
+    'Please select what manufacturing decarbonisation challenges your solution addresses, or alternatively, which of these challenges you are interested in addressing',
+    'Please select what transport decarbonisation challenges your solution addresses, or alternatively, which of these challenges you are interested in addressing',
+    'Please select what built environment decarbonisation challenges your solution addresses, or alternatively, which of these challenges you are interested in addressing',
+    'Please select what agriculture decarbonisation challenges your solution addresses, or alternatively, which of these challenges you are interested in addressing'
+  ];
+
+  // View/label tuning
+  const LABEL = {
+    wrapChars: 20,
+    kSectorOn: 1.20,  // multiplied by k0 (scale at full extent)
+    kSectorOff: 1.35
+  };
+
+  // ---------------------------------------------------------------------------
+  // Utilities
+  // ---------------------------------------------------------------------------
+  /** Assign a deterministic pastel color to unknown sectors. */
+  function ensureSectorColor(name) {
+    if (!SECTOR_COLOR[name]) {
+      const h = Array.from(name).reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
+      SECTOR_COLOR[name] = `hsl(${h}, 30%, 80%)`;
+    }
+  }
+
+  /** Simple word-wrapping into lines of ~N chars. */
+  function wrapWords(name, maxChars = LABEL.wrapChars) {
+    const words = String(name || '').split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const w of words) {
+      const next = (line + ' ' + w).trim();
+      if (line && next.length > maxChars) { lines.push(line.trim()); line = w; }
+      else { line = next; }
+    }
+    if (line) lines.push(line.trim());
+    return lines;
+  }
+
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  /** Normalize wheel delta across browsers and devices. */
+  function normDeltaY(e) {
+    const unit = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 120 : 1);
+    return e.deltaY * unit;
+  }
+
+  function debounce(fn, delay) {
+    let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), delay); };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Data loading & shaping
+  // ---------------------------------------------------------------------------
+  /**
+   * Fetch cards (JSON) and solutions (CSV), then build a hierarchical
+   * structure suitable for d3.pack().
+   */
+  async function loadData() {
+    const [cards, solutions] = await Promise.all([
+      fetch(ENDPOINTS.cardsJSON).then(r => r.json()),
+      d3.csv(ENDPOINTS.solutionsCSV)
+    ]);
+
+    // Gather mappings
+    const sectorsFromCSV = new Set();
+    const sectorToChallenges = new Map(); // sector -> Set(challenge titles)
+    const challengeToProjects = {};       // challenge title -> Array<project>
+
+    // Index challenges to projects from checkbox columns
+    solutions.forEach(row => {
+      CHALLENGE_COLS.forEach(col => {
+        const vals = String(row[col] || '')
+          .split(',')
+          .map(v => v.trim())
+          .filter(Boolean);
+        for (const v of vals) {
+          (challengeToProjects[v] ||= []).push(asProject(row));
+        }
+      });
+
+      // Free-form entries
+      const freeChallenges = String(row[COL.freeForm] || '')
+        .split(',').map(v => v.trim()).filter(Boolean);
+      for (const ch of freeChallenges) {
+        (challengeToProjects[ch] ||= []).push(asProject(row));
+      }
+
+      // Sectors selected per row; seed colors and attach free-form challenge links
+      const sectors = String(row[COL.sectors] || '')
+        .split(',').map(v => v.trim()).filter(Boolean);
+      for (const s of sectors) { sectorsFromCSV.add(s); ensureSectorColor(s); }
+      for (const s of sectors) {
+        const set = sectorToChallenges.get(s) || new Set();
+        for (const ch of freeChallenges) set.add(ch);
+        sectorToChallenges.set(s, set);
+      }
+    });
+
+    // Group cards by sector; seed sectorToChallenges with curated titles
+    const grouped = d3.group(cards, d => d.sector);
+    for (const [sector, items] of grouped) {
+      const set = sectorToChallenges.get(sector) || new Set();
+      items.forEach(d => set.add(d.title));
+      sectorToChallenges.set(sector, set);
+      ensureSectorColor(sector);
+    }
+
+    // Build root hierarchy: sector -> challenge -> projects
+    const allSectors = new Set([...grouped.keys(), ...sectorsFromCSV]);
+    const root = {
+      name: 'root',
+      children: Array.from(allSectors, sector => {
+        const titles = Array.from(sectorToChallenges.get(sector) || []);
+        return {
+          name: sector,
+          children: titles.map(title => ({
+            name: title,
+            children: challengeToProjects[title] || [{ name: '', value: 1 }]
+          }))
+        };
+      })
+    };
+
+    return root;
+
+    function asProject(row) {
+      return {
+        name: row[COL.project] || 'Unnamed',
+        org: row[COL.org] || '',
+        ai: row[COL.ai] || '',
+        value: 10
+      };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chart rendering
+  // ---------------------------------------------------------------------------
+  function renderChart(rootData) {
+    const container = document.getElementById('chart');
+
+    const height = window.innerHeight;
+    const width = height;
+
+    // Colour scale (not used for sectors — we use sector palette)
+    const color = d3.scaleLinear()
+      .domain([0, 5])
+      .range(['hsl(152,80%,80%)', 'hsl(228,30%,40%)'])
+      .interpolate(d3.interpolateHcl);
+
+    const pack = data => d3.pack().size([width, height]).padding(3)(
+      d3.hierarchy(data).sum(d => d.value).sort((a, b) => b.value - a.value)
+    );
+
+    const root = pack(rootData);
+
+    // Cap sizes: challenges ≤ 33% of sector; projects ≤ 33% of challenge
+    root.descendants().forEach(d => {
+      if (d.depth === 2 && d.parent) d.r = Math.min(d.r, d.parent.r * 0.33);
+      if (!d.children && d.parent) d.r = Math.min(d.r, d.parent.r * 0.33);
+    });
+
+    // Orbit layout for solutions around each challenge
+    for (const ch of root.descendants()) {
+      if (ch.depth !== 2 || !ch.children) continue;
+      const leaves = ch.children.filter(l => !l.children && l.data.name !== '');
+      if (!leaves.length) continue;
+      const ring1 = ch.r * 0.68;
+      const ring2 = ch.r * 0.86;
+      const circumference1 = 2 * Math.PI * ring1;
+      const totalDiam = d3.sum(leaves, l => 2 * l.r);
+      const splitIndex = totalDiam > circumference1 * 0.9 ? Math.ceil(leaves.length / 2) : leaves.length;
+      const placeOnRing = (nodes, R) => {
+        const n = nodes.length; if (!n) return;
+        const start = -Math.PI / 2;
+        nodes.forEach((l, i) => {
+          const a = start + (i / n) * 2 * Math.PI;
+          l.x = ch.x + Math.cos(a) * R;
+          l.y = ch.y + Math.sin(a) * R;
+          l.r = Math.min(l.r, ch.r * 0.22);
+        });
+      };
+      placeOnRing(leaves.slice(0, splitIndex), ring1);
+      placeOnRing(leaves.slice(splitIndex), ring2);
+    }
+
+    // SVG scaffold
+    const svg = d3.create('svg')
+      .attr('viewBox', `${-width / 2} ${-height / 2} ${width} ${height}`)
+      .attr('width', width)
+      .attr('height', height)
+      .attr('style', 'max-width: 100%; height: auto; display: block; margin: 0 auto; background: var(--bg); cursor: grab;');
+
+    // State for zoom/pan
+    let focus = root;
+    let view; // [cx, cy, z]
+    let dragging = false;
+    let dragStartPx = [0, 0];
+    let dragStartView = null;
+    let dragMoved = false;
+
+    // Scale at full extent; label hysteresis thresholds
+    const k0 = width / (root.r * 2);
+    const K_SECTOR_ON  = k0 * LABEL.kSectorOn;
+    const K_SECTOR_OFF = k0 * LABEL.kSectorOff;
+    let sectorOnlyActive = true; // initial view is sectors-only
+
+    // Helpers that depend on current view
+    const svgToWorld = (px, py) => { const k = width / view[2]; return [view[0] + px / k, view[1] + py / k]; };
+
+    function clampPan(cx, cy, z) {
+      const half = z / 2;
+      const minX = root.x - root.r + half;
+      const maxX = root.x + root.r - half;
+      const minY = root.y - root.r + half;
+      const maxY = root.y + root.r - half;
+      return [clamp(cx, minX, maxX), clamp(cy, minY, maxY), z];
+    }
+
+    function pickFocus(v) {
+      const [cx, cy, z] = v; const k = width / z;
+      let best = root;
+      root.each(d => {
+        if (d.depth === 0) return;
+        const dx = cx - d.x, dy = cy - d.y;
+        const inside = dx*dx + dy*dy <= d.r*d.r;
+        const bigEnough = d.r * k > (d.depth === 1 ? 80 : d.depth === 2 ? 50 : 32);
+        if (inside && bigEnough && d.depth >= best.depth) best = d;
+      });
+      return best;
+    }
+
+    const sectorForView = (v) => {
+      const raw = pickFocus(v);
+      return raw.depth === 1 ? raw : (raw.ancestors().find(a => a.depth === 1) || root);
+    };
+
+    const canShowProjectAtSector = (n, f, k) => {
+      if (!(f && f.depth === 1)) return false;
+      if (!(n && n.depth === 3 && n.parent && n.parent.parent === f)) return false;
+      return n.r * k > 12; // px threshold for label
+    };
+
+    const projectLabelFill = (n, f) => {
+      if (!canShowProjectAtSector(n, f, width / view[2])) return '#000';
+      const base = d3.hsl(SECTOR_COLOR[f.data.name] || '#888');
+      base.s = Math.min(1, base.s * 1.2);
+      base.l = Math.max(0, base.l * 0.45);
+      return base.formatHex();
+    };
+
+    function zoomTo(v) {
+      const k = width / v[2];
+      view = v;
+      label.attr('transform', d => `translate(${(d.x - v[0]) * k},${(d.y - v[1]) * k})`);
+      node.attr('transform', d => `translate(${(d.x - v[0]) * k},${(d.y - v[1]) * k})`);
+      node.attr('r', d => d.r * k);
+    }
+
+    function refreshLabels(targetView, tr, focusOverride) {
+      const k = width / targetView[2];
+      if (sectorOnlyActive && k >= K_SECTOR_OFF) sectorOnlyActive = false;
+      else if (!sectorOnlyActive && k <= K_SECTOR_ON) sectorOnlyActive = true;
+      const sectorOnly = sectorOnlyActive;
+      const f = focusOverride || focus;
+      label.interrupt();
+      label
+        .transition(tr || svg.transition().duration(0))
+        .style('fill-opacity', n => {
+          if (sectorOnly) return (n.depth === 1 && n.parent === root) ? 1 : 0;
+          if (n.depth === 1) return 0;
+          const isFocus = n === f; const isChild = n.parent === f;
+          const showProject = canShowProjectAtSector(n, f, k);
+          return (isFocus || isChild || showProject) ? 1 : 0;
+        })
+        .style('fill', n => {
+          if (sectorOnly) return '#000';
+          if (n.depth === 1) return '#000';
+          return projectLabelFill(n, f);
+        })
+        .on('start', function(n) {
+          const show = sectorOnly
+            ? (n.depth === 1 && n.parent === root)
+            : (n.depth !== 1 && (n === f || n.parent === f || canShowProjectAtSector(n, f, k)));
+          if (show) this.style.display = 'inline';
+        })
+        .on('end', function(n) {
+          const show = sectorOnly
+            ? (n.depth === 1 && n.parent === root)
+            : (n.depth !== 1 && (n === f || n.parent === f || canShowProjectAtSector(n, f, k)));
+          if (!show) this.style.display = 'none';
+        });
+    }
+
+    // Drag‑to‑pan (with label refresh throttling)
+    const refreshLabelsDebounced = debounce((targetView) => {
+      const sectorFocus = sectorForView(targetView);
+      refreshLabels(targetView, null, sectorFocus);
+    }, 500);
+
+    svg.call(
+      d3.drag()
+        .on('start', (event) => {
+          dragging = true; dragMoved = false;
+          dragStartPx = [event.x, event.y];
+          dragStartView = view.slice();
+          svg.style('cursor', 'grabbing');
+        })
+        .on('drag', (event) => {
+          const dx = event.x - dragStartPx[0];
+          const dy = event.y - dragStartPx[1];
+          if (Math.abs(dx) + Math.abs(dy) > 3) dragMoved = true;
+          const k = width / dragStartView[2];
+          const cx = dragStartView[0] - dx / k;
+          const cy = dragStartView[1] - dy / k;
+          const next = clampPan(cx, cy, dragStartView[2]);
+          zoomTo(next);
+          refreshLabelsDebounced(next);
+        })
+        .on('end', () => {
+          dragging = false;
+          svg.style('cursor', 'grab');
+          refreshLabels(view, null, sectorForView(view));
+        })
+    );
+
+    // Mouse wheel zoom (cursor-centered)
+    const MIN_VIEW = 12;                    // max zoom-in
+    const MAX_VIEW = root.r * 2 * 1.1;      // slightly beyond full extent
+
+    function onWheel(e) {
+      e.preventDefault();
+      const [px, py] = d3.pointer(e, svg.node());
+      const [wx, wy] = svgToWorld(px, py);
+      const dy = Math.max(-240, Math.min(240, normDeltaY(e)));
+      const factor = Math.exp(dy * 0.0035);
+      const nextZ = clamp(view[2] * factor, MIN_VIEW, MAX_VIEW);
+      const kNext = width / nextZ;
+      const cx = wx - px / kNext;
+      const cy = wy - py / kNext;
+      const nextView = [cx, cy, nextZ];
+
+      focus = pickFocus(nextView);
+
+      svg.transition()
+        .duration(5)
+        .tween('zoom', () => {
+          const i = d3.interpolateZoom(view, nextView);
+          return t => zoomTo(i(t));
+        })
+        .on('end', () => refreshLabels(nextView, null, sectorForView(nextView)));
+
+      refreshLabelsDebounced(nextView);
+    }
+
+    svg.node().addEventListener('wheel', onWheel, { passive: false });
+
+    // Nodes (circles)
+    const node = svg.append('g')
+      .selectAll('circle')
+      .data(root.descendants().slice(1))
+      .join('circle')
+      .attr('fill', d => {
+        if (d.depth === 1 && SECTOR_COLOR[d.data.name]) return SECTOR_COLOR[d.data.name];
+        if (d.depth === 2 && d.parent?.data?.name && SECTOR_COLOR[d.parent.data.name]) return SECTOR_COLOR[d.parent.data.name];
+        if (d.depth === 3 && d.data.name === '') return 'rgba(0,0,0,0)';
+        if (d.depth === 3) {
+          const base = d3.hsl(SECTOR_COLOR[d.parent.parent.data.name]);
+          base.s = Math.min(1, base.s * 3.0);
+          base.l = Math.max(0, base.l * 1.1);
+          return base.formatHex();
+        }
+        return 'red';
+      })
+      .attr('stroke', d => d.depth === 2 ? 'rgba(0,0,0,0.5)' : null)
+      .attr('stroke-width', d => d.depth === 2 ? 1.0 : null)
+      .attr('stroke-dasharray', d => d.depth === 2 ? '3,5' : null)
+      .attr('pointer-events', d => {
+        if (!d.children) return (d.data && d.data.name) ? 'auto' : 'none';
+        return null;
+      })
+      .on('mouseover', function(event, d) {
+        if (!d.children && d.data.name === '') return;
+        d3.select(this).attr('stroke-width', d.depth === 2 ? 2 : 1.5).attr('stroke', 'rgba(0,0,0,0.5)');
+      })
+      .on('mouseout', function(event, d) {
+        if (!d.children && d.data.name === '') return;
+        const circle = d3.select(this);
+        if (d.depth === 2) circle.attr('stroke', 'rgba(0,0,0,0.5)').attr('stroke-width', 1.0).attr('stroke-dasharray', '3,5');
+        else circle.attr('stroke', null);
+      })
+      .on('click', (event, d) => {
+        if (!d.children) {
+          if (d.data?.name) {
+            openModal({ org: d.data.org || '', name: d.data.name || '', ai: d.data.ai || '' });
+            event.stopPropagation();
+          }
+          return;
+        }
+        if (focus !== d) {
+          zoomToNode(event, d);
+          event.stopPropagation();
+        }
+      });
+
+    // Labels
+    const label = svg.append('g')
+      .attr('pointer-events', 'none')
+      .attr('text-anchor', 'middle')
+      .selectAll('text')
+      .data(root.descendants())
+      .join('text')
+      .each(function(d) {
+        if (d.depth === 0) return;
+        const text = d3.select(this);
+        const name = d.depth === 1 ? String(d.data.name).toUpperCase() : d.data.name;
+        if (d.depth >= 2) {
+          const lines = wrapWords(name, LABEL.wrapChars);
+          const lineHeight = 1.01; const n = lines.length; const offset = (n - 1) / 2;
+          text.selectAll('tspan')
+            .data(lines)
+            .join('tspan')
+            .attr('x', 0)
+            .text(w => w)
+            .attr('dy', (w, i) => (i === 0 ? -offset * lineHeight + 'em' : lineHeight + 'em'));
+        } else {
+          text.append('tspan').attr('x', 0).text(name);
+        }
+      })
+      .style('font-family', 'inherit')
+      .style('font-weight', 500)
+      .style('fill', '#000')
+      .style('fill-opacity', d => d.depth === 1 ? 0.5 : 1)
+      .style('font-size', d => d.depth === 1 ? '18px' : d.depth === 2 ? '11px' : '9px')
+      .style('display', d => d.parent === root ? 'inline' : 'none')
+      .style('stroke', '#fff')
+      .style('stroke-width', 2)
+      .style('stroke-opacity', 0.5)
+      .style('paint-order', 'stroke fill');
+
+    // Background click resets to root
+    svg.on('click', (event) => { if (!dragMoved) zoomToNode(event, root); dragMoved = false; });
+
+    // Initial view
+    zoomTo([root.x, root.y, root.r * 2]);
+    refreshLabels([root.x, root.y, root.r * 2]);
+
+    function zoomToNode(event, d) {
+      focus = d;
+      const target = [focus.x, focus.y, focus.r * 2];
+      const tr = svg.transition().duration(event.altKey ? 900 : 350).tween('zoom', () => {
+        const i = d3.interpolateZoom(view, target);
+        return t => zoomTo(i(t));
+      });
+      tr.on('end', () => refreshLabels(target));
+    }
+
+    // Mount
+    container.innerHTML = '';
+    container.appendChild(svg.node());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Modal helpers
+  // ---------------------------------------------------------------------------
+  function openModal({ org, name, ai }) {
+    const m = document.getElementById('modal');
+    const title = document.getElementById('modal-title');
+    const body = document.getElementById('modal-body');
+    title.textContent = name || 'Solution details';
+    body.innerHTML = `
+      <p><strong>Organisation:</strong> ${org || '—'}</p>
+      <p><strong>Project:</strong> ${name || '—'}</p>
+      <p><strong>How are you using AI to tackle decarbonisation challenges?</strong></p>
+      <p>${(ai && ai.trim()) ? ai : '—'}</p>
+    `;
+    m.style.display = 'flex';
+    document.getElementById('modal-close').focus({ preventScroll: true });
+  }
+
+  function closeModal() {
+    document.getElementById('modal').style.display = 'none';
+  }
+
+  // Wire up modal close (click outside, X button, Esc)
+  document.addEventListener('click', e => {
+    if (e.target.id === 'modal' || e.target.id === 'modal-close') closeModal();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+  // ---------------------------------------------------------------------------
+  // Bootstrap
+  // ---------------------------------------------------------------------------
+  (async function main() {
+    try {
+      const data = await loadData();
+      renderChart(data);
+    } catch (err) {
+      console.error('Error loading data:', err);
+      const el = document.getElementById('chart');
+      el.innerHTML = '<p role="alert" style="padding:16px">Failed to load data. Please refresh to retry.</p>';
+    }
+  })();
+  </script>
+</body>
+</html>
