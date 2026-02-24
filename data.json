@@ -1,5 +1,19 @@
 [
  {
+   "number": 0,
+   "sector": "Energy",
+   "phaseTitle": "Design & Planning",
+   "title": "Decarbonisation Challenge Not Covered",
+   "description": "If your solution addresses a decarbonisation challenge that is not currently covered in the challenge cards, add yourself to this card",
+   "challenge": "",
+   "Impact": 3,
+   "AISuitability": 3,
+   "Novelty": 3,
+   "ai1": "",
+   "ai2": "",
+   "ai3": ""
+ },
+ {
    "number": 1,
    "sector": "Energy",
    "phaseTitle": "Design & Planning",
